@@ -188,27 +188,26 @@ EOF
 
 # Запуск контейнера
 # Проверка доступной версии docker compose
-if docker compose version &>/dev/null; then
-    docker compose up -d
-elif docker-compose version &>/dev/null; then
-    docker-compose up -d
+DOCKER_COMPOSE_CMD=""
+
+# Пробуем новый синтаксис (плагин)
+if docker compose &>/dev/null; then
+    DOCKER_COMPOSE_CMD="docker compose"
+# Пробуем старый синтаксис (standalone)
+elif command -v docker-compose &>/dev/null; then
+    DOCKER_COMPOSE_CMD="docker-compose"
 else
     # Установка docker-compose-plugin если нет ни одного
+    log_info "Установка docker-compose-plugin..."
     apt install -y docker-compose-plugin
-    docker compose up -d
+    DOCKER_COMPOSE_CMD="docker compose"
 fi
+
+log_info "Используем: $DOCKER_COMPOSE_CMD"
+$DOCKER_COMPOSE_CMD up -d
 
 # Проверка запуска
 sleep 5
-
-# Определение команды для проверки
-if docker compose version &>/dev/null; then
-    DOCKER_COMPOSE_CMD="docker compose"
-elif docker-compose version &>/dev/null; then
-    DOCKER_COMPOSE_CMD="docker-compose"
-else
-    DOCKER_COMPOSE_CMD="docker compose"
-fi
 
 if $DOCKER_COMPOSE_CMD ps | grep -q "Up"; then
     log_success "WGDashboard запущен"

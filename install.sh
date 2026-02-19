@@ -101,7 +101,8 @@ apt install -y \
     ca-certificates \
     gnupg \
     lsb-release \
-    ufw
+    ufw \
+    software-properties-common
 log_success "Зависимости установлены"
 
 # ============================================================
@@ -123,31 +124,72 @@ ufw --force enable || true
 log_success "Брандмауэр настроен"
 
 # ============================================================
-# Шаг 5: Установка Docker
+# Шаг 5: Проверка и установка Docker
 # ============================================================
-log_info "Установка Docker..."
+log_info "Проверка Docker..."
 
-# Проверка, установлен ли уже Docker
-if ! command -v docker &> /dev/null; then
+DOCKER_INSTALLED=false
+
+# Проверка Docker
+if command -v docker &> /dev/null; then
+    DOCKER_VERSION=$(docker --version)
+    log_success "Docker установлен: ${DOCKER_VERSION}"
+    DOCKER_INSTALLED=true
+else
+    log_warn "Docker не найден"
+fi
+
+# Проверка Docker Compose
+COMPOSE_CMD=""
+if docker compose &>/dev/null; then
+    COMPOSE_VERSION=$(docker compose version 2>&1 || echo "unknown")
+    log_success "Docker Compose (плагин): ${COMPOSE_VERSION}"
+    COMPOSE_CMD="docker compose"
+elif command -v docker-compose &> /dev/null; then
+    COMPOSE_VERSION=$(docker-compose --version)
+    log_success "Docker Compose (standalone): ${COMPOSE_VERSION}"
+    COMPOSE_CMD="docker-compose"
+else
+    log_warn "Docker Compose не найден"
+fi
+
+# Установка если чего-то нет
+if [ "$DOCKER_INSTALLED" = false ] || [ -z "$COMPOSE_CMD" ]; then
+    
+    if [ "$DOCKER_INSTALLED" = false ]; then
+        log_info "Установка Docker..."
+    else
+        log_info "Установка Docker Compose..."
+    fi
+    
     # Добавление GPG ключа Docker
+    log_info "Добавление репозитория Docker..."
     install -m 0755 -d /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.gpg 2>/dev/null || true
     chmod a+r /etc/apt/keyrings/docker.gpg
     
     # Добавление репозитория
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list 2>/dev/null || true
     
-    # Установка Docker
+    # Обновление и установка
     apt update
     apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
     
     # Добавление пользователя в группу docker
     usermod -aG docker $SUDO_USER 2>/dev/null || true
     
-    log_success "Docker установлен"
-else
-    log_success "Docker уже установлен"
+    log_success "Docker и Docker Compose установлены"
+    
+    COMPOSE_CMD="docker compose"
 fi
+
+# Проверка что Docker работает
+if ! docker info &>/dev/null; then
+    log_error "Docker не работает корректно"
+    exit 1
+fi
+
+log_success "Docker готов к работе"
 
 # ============================================================
 # Шаг 6: Установка WGDashboard через Docker
@@ -187,33 +229,16 @@ services:
 EOF
 
 # Запуск контейнера
-# Проверка доступной версии docker compose
-DOCKER_COMPOSE_CMD=""
-
-# Пробуем новый синтаксис (плагин)
-if docker compose &>/dev/null; then
-    DOCKER_COMPOSE_CMD="docker compose"
-# Пробуем старый синтаксис (standalone)
-elif command -v docker-compose &>/dev/null; then
-    DOCKER_COMPOSE_CMD="docker-compose"
-else
-    # Установка docker-compose-plugin если нет ни одного
-    log_info "Установка docker-compose-plugin..."
-    apt install -y docker-compose-plugin
-    DOCKER_COMPOSE_CMD="docker compose"
-fi
-
-log_info "Используем: $DOCKER_COMPOSE_CMD"
-$DOCKER_COMPOSE_CMD up -d
+log_info "Запуск WGDashboard..."
+$COMPOSE_CMD up -d
 
 # Проверка запуска
 sleep 5
-
-if $DOCKER_COMPOSE_CMD ps | grep -q "Up"; then
+if $COMPOSE_CMD ps | grep -q "Up"; then
     log_success "WGDashboard запущен"
 else
     log_error "Не удалось запустить WGDashboard"
-    $DOCKER_COMPOSE_CMD logs
+    $COMPOSE_CMD logs
     exit 1
 fi
 
@@ -258,10 +283,14 @@ fi
 if [ "$INSTALL_QWEN" = true ]; then
     log_info "Установка Qwen Code..."
     
-    # Установка Node.js (если нет)
+    # Проверка Node.js
     if ! command -v node &> /dev/null; then
+        log_info "Установка Node.js..."
         curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
         apt install -y nodejs
+        log_success "Node.js установлен"
+    else
+        log_success "Node.js уже установлен"
     fi
     
     # Установка Qwen Code через npm
@@ -311,9 +340,9 @@ echo ""
 echo "🐳 Docker:"
 echo "   Контейнер: wgdashboard"
 echo "   Команды:"
-echo "     docker compose ps     — статус"
-echo "     docker compose logs   — логи"
-echo "     docker compose restart — перезапуск"
+echo "     $COMPOSE_CMD ps     — статус"
+echo "     $COMPOSE_CMD logs   — логи"
+echo "     $COMPOSE_CMD restart — перезапуск"
 echo ""
 echo "🤖 Qwen Code:"
 if [ "$INSTALL_QWEN" = true ]; then
@@ -325,10 +354,11 @@ else
 fi
 echo ""
 echo "📋 Полезные команды:"
-echo "   docker compose ps        — статус WGDashboard"
-echo "   docker compose logs      — логи"
-echo "   docker compose restart   — перезапуск"
-echo "   qwen                     — запустить Qwen Code"
+echo "   $COMPOSE_CMD ps        — статус WGDashboard"
+echo "   $COMPOSE_CMD logs      — логи"
+echo "   $COMPOSE_CMD restart   — перезапуск"
+echo "   docker ps              — список контейнеров"
+echo "   qwen                   — запустить Qwen Code"
 echo ""
 
 # Сохранение информации в файл
@@ -349,15 +379,17 @@ WireGuard:
 Docker:
   Контейнер: wgdashboard
   Директория: ${WGDIR}
+  Compose: ${COMPOSE_CMD}
 
 Qwen Code:
   Установлен: ${INSTALL_QWEN}
   Skills: /root/.qwen/skills/wireguard-vpn/
 
 Команды:
-  docker compose ps
-  docker compose logs
-  docker compose restart
+  ${COMPOSE_CMD} ps
+  ${COMPOSE_CMD} logs
+  ${COMPOSE_CMD} restart
+  docker ps
   qwen
 EOF
 

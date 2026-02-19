@@ -75,12 +75,10 @@ fi
 
 # Определение GitHub username
 if [ -z "$GITHUB_USER" ]; then
-    log_warn "GITHUB_USER не указан. Введите ваш GitHub username:"
-    read -r GITHUB_USER
-    if [ -z "$GITHUB_USER" ]; then
-        log_error "GitHub username обязателен"
-        exit 1
-    fi
+    # Пробуем определить из окружения или используем дефолт
+    GITHUB_USER="DenFax"
+    log_warn "GITHUB_USER не указан, используем по умолчанию: ${GITHUB_USER}"
+    log_warn "Для указания своего username добавьте: --github-user YOUR_USERNAME"
 fi
 
 REPO_URL="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${BRANCH}"

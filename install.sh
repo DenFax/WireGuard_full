@@ -1,9 +1,9 @@
 #!/bin/bash
 # WireGuard Full Install Script
-# Одна команда для полной настройки VPN сервера с Qwen Code и skill
+# Одна команда для полной настройки VPN сервера с WGDashboard и Qwen Code
 #
 # Использование:
-#   curl -fsSL https://raw.githubusercontent.com/USERNAME/WireGuard_full/main/install.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/DenFax/WireGuard_full/main/install.sh | sudo bash
 #
 # С параметрами:
 #   curl -fsSL ... | sudo bash -s -- --wg-port 51820 --dashboard-port 10086 --domain vpn.example.com
@@ -22,7 +22,7 @@ WG_PORT=51820
 DASHBOARD_PORT=10086
 DOMAIN=""
 INSTALL_QWEN=true
-GITHUB_USER=""
+GITHUB_USER="DenFax"
 GITHUB_REPO="WireGuard_full"
 BRANCH="main"
 
@@ -44,7 +44,7 @@ while [[ $# -gt 0 ]]; do
         --branch) BRANCH="$2"; shift 2 ;;
         -h|--help)
             echo "Использование:"
-            echo "  curl -fsSL https://raw.githubusercontent.com/USER/WireGuard_full/main/install.sh | sudo bash"
+            echo "  curl -fsSL https://raw.githubusercontent.com/DenFax/WireGuard_full/main/install.sh | sudo bash"
             echo ""
             echo "Параметры:"
             echo "  --wg-port PORT        WireGuard порт (по умолчанию: 51820)"
@@ -52,8 +52,6 @@ while [[ $# -gt 0 ]]; do
             echo "  --domain DOMAIN       Домен для HTTPS (опционально)"
             echo "  --no-qwen             Не устанавливать Qwen Code"
             echo "  --github-user USER    GitHub username"
-            echo "  --github-repo REPO    GitHub репозиторий"
-            echo "  --branch BRANCH       Ветка GitHub"
             exit 0
             ;;
         *) shift ;;
@@ -63,7 +61,7 @@ done
 echo ""
 echo "╔═══════════════════════════════════════════════════════════╗"
 echo "║         WireGuard Full Install Script                     ║"
-echo "║         WGDashboard + Qwen Code + Skills                  ║"
+echo "║         WGDashboard (Docker) + Qwen Code + Skills         ║"
 echo "╚═══════════════════════════════════════════════════════════╝"
 echo ""
 
@@ -73,19 +71,9 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-# Определение GitHub username
-if [ -z "$GITHUB_USER" ]; then
-    # Пробуем определить из окружения или используем дефолт
-    GITHUB_USER="DenFax"
-    log_warn "GITHUB_USER не указан, используем по умолчанию: ${GITHUB_USER}"
-    log_warn "Для указания своего username добавьте: --github-user YOUR_USERNAME"
-fi
-
-REPO_URL="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${BRANCH}"
-
-log_info "Репозиторий: ${GITHUB_USER}/${GITHUB_REPO}@${BRANCH}"
-log_info "WireGuard порт: ${WG_PORT}"
-log_info "Dashboard порт: ${DASHBOARD_PORT}"
+log_info "GitHub: ${GITHUB_USER}/${GITHUB_REPO}@${BRANCH}"
+log_info "WireGuard порт: ${WG_PORT}/udp"
+log_info "Dashboard порт: ${DASHBOARD_PORT}/tcp"
 [ -n "$DOMAIN" ] && log_info "Домен для HTTPS: ${DOMAIN}"
 
 echo ""
@@ -104,26 +92,24 @@ log_success "Система обновлена"
 # ============================================================
 log_info "Установка зависимостей..."
 apt install -y \
-    wireguard \
-    wireguard-tools \
-    qrencode \
     curl \
     wget \
     git \
     python3 \
     python3-pip \
-    nginx \
-    ufw \
-    openssl \
-    ca-certificates
+    apt-transport-https \
+    ca-certificates \
+    gnupg \
+    lsb-release \
+    ufw
 log_success "Зависимости установлены"
 
 # ============================================================
 # Шаг 3: Включение IP Forwarding
 # ============================================================
 log_info "Включение IP forwarding..."
-sysctl -w net.ipv4.ip_forward=1
-echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-wireguard.conf
+sysctl -p /etc/sysctl.d/99-wireguard.conf
 log_success "IP forwarding включён"
 
 # ============================================================
@@ -137,32 +123,90 @@ ufw --force enable || true
 log_success "Брандмауэр настроен"
 
 # ============================================================
-# Шаг 5: Установка WGDashboard
+# Шаг 5: Установка Docker
+# ============================================================
+log_info "Установка Docker..."
+
+# Проверка, установлен ли уже Docker
+if ! command -v docker &> /dev/null; then
+    # Добавление GPG ключа Docker
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    chmod a+r /etc/apt/keyrings/docker.gpg
+    
+    # Добавление репозитория
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+    
+    # Установка Docker
+    apt update
+    apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    
+    # Добавление пользователя в группу docker
+    usermod -aG docker $SUDO_USER 2>/dev/null || true
+    
+    log_success "Docker установлен"
+else
+    log_success "Docker уже установлен"
+fi
+
+# ============================================================
+# Шаг 6: Установка WGDashboard через Docker
 # ============================================================
 log_info "Установка WGDashboard..."
-cd /opt
-git clone https://github.com/donaldzou/WGDashboard.git 2>/dev/null || true
-cd WGDashboard/src
-chmod u+x wg-dashboard.sh
 
-# Запуск установки WGDashboard
-export WG_PORT="${WG_PORT}"
-export DASHBOARD_PORT="${DASHBOARD_PORT}"
-./wg-dashboard.sh install
+# Создание директории
+WGDIR="/root/wgdashboard"
+mkdir -p "${WGDIR}"/{conf,data}
+cd "${WGDIR}"
 
-# Автозапуск
-systemctl enable wg-quick@wg0 2>/dev/null || true
-systemctl enable wg-dashboard
-systemctl start wg-quick@wg0 2>/dev/null || true
-systemctl start wg-dashboard
+# Создание .env файла
+cat > .env << EOF
+WG_PORT=${WG_PORT}
+DASHBOARD_PORT=${DASHBOARD_PORT}
+DOMAIN=${DOMAIN:-localhost}
+EOF
 
-log_success "WGDashboard установлен"
+# Создание docker-compose.yaml
+cat > docker-compose.yaml << EOF
+services:
+  wgdashboard:
+    image: ghcr.io/wgdashboard/wgdashboard:latest
+    container_name: wgdashboard
+    hostname: wgdashboard
+    ports:
+      - "${DASHBOARD_PORT}:10086"
+      - "${WG_PORT}:51820/udp"
+    volumes:
+      - "./conf:/etc/wireguard"
+      - "./data:/data"
+    cap_add:
+      - NET_ADMIN
+    sysctls:
+      - net.ipv4.ip_forward=1
+    restart: unless-stopped
+EOF
+
+# Запуск контейнера
+docker compose up -d
+
+# Проверка запуска
+sleep 5
+if docker compose ps | grep -q "Up"; then
+    log_success "WGDashboard запущен"
+else
+    log_error "Не удалось запустить WGDashboard"
+    docker compose logs
+    exit 1
+fi
 
 # ============================================================
-# Шаг 6: Настройка HTTPS (если указан домен)
+# Шаг 7: Настройка HTTPS (если указан домен)
 # ============================================================
 if [ -n "$DOMAIN" ]; then
     log_info "Настройка HTTPS для ${DOMAIN}..."
+    
+    # Установка Nginx
+    apt install -y nginx
     
     # Конфиг Nginx
     cat > /etc/nginx/sites-available/wgdashboard << EOF
@@ -191,7 +235,7 @@ EOF
 fi
 
 # ============================================================
-# Шаг 7: Установка Qwen Code (опционально)
+# Шаг 8: Установка Qwen Code (опционально)
 # ============================================================
 if [ "$INSTALL_QWEN" = true ]; then
     log_info "Установка Qwen Code..."
@@ -212,14 +256,19 @@ if [ "$INSTALL_QWEN" = true ]; then
     log_info "Скачивание skills из репозитория..."
     cd /root/.qwen/skills
     git clone "https://github.com/${GITHUB_USER}/${GITHUB_REPO}.git" temp_skills
-    cp -r temp_skills/skills/wireguard-vpn wireguard-vpn 2>/dev/null || true
+    if [ -d "temp_skills/skills/wireguard-vpn" ]; then
+        cp -r temp_skills/skills/wireguard-vpn wireguard-vpn
+        log_success "Skills установлены"
+    else
+        log_warn "Skills не найдены в репозитории"
+    fi
     rm -rf temp_skills
     
-    log_success "Qwen Code установлен с skills"
+    log_success "Qwen Code установлен"
 fi
 
 # ============================================================
-# Шаг 8: Получение информации о сервере
+# Шаг 9: Получение информации о сервере
 # ============================================================
 SERVER_IP=$(curl -s ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')
 
@@ -239,7 +288,14 @@ echo "   Пароль: admin (смените при первом входе!)"
 echo ""
 echo "🔧 WireGuard:"
 echo "   Порт: ${WG_PORT}/udp"
-echo "   Конфиг: /etc/wireguard/wg0.conf"
+echo "   Конфиг: ${WGDIR}/conf/wg0.conf"
+echo ""
+echo "🐳 Docker:"
+echo "   Контейнер: wgdashboard"
+echo "   Команды:"
+echo "     docker compose ps     — статус"
+echo "     docker compose logs   — логи"
+echo "     docker compose restart — перезапуск"
 echo ""
 echo "🤖 Qwen Code:"
 if [ "$INSTALL_QWEN" = true ]; then
@@ -251,13 +307,14 @@ else
 fi
 echo ""
 echo "📋 Полезные команды:"
-echo "   wg show              — статус WireGuard"
-echo "   systemctl status wg-dashboard — статус панели"
-echo "   qwen                 — запустить Qwen Code"
+echo "   docker compose ps        — статус WGDashboard"
+echo "   docker compose logs      — логи"
+echo "   docker compose restart   — перезапуск"
+echo "   qwen                     — запустить Qwen Code"
 echo ""
 
 # Сохранение информации в файл
-cat > /root/wgdashboard-info.txt << EOF
+cat > "${WGDIR}/info.txt" << EOF
 WireGuard Full Install - Информация
 ====================================
 Дата установки: $(date)
@@ -269,17 +326,22 @@ WGDashboard:
 
 WireGuard:
   Порт: ${WG_PORT}/udp
-  Конфиг: /etc/wireguard/wg0.conf
+  Конфиг: ${WGDIR}/conf/wg0.conf
+
+Docker:
+  Контейнер: wgdashboard
+  Директория: ${WGDIR}
 
 Qwen Code:
   Установлен: ${INSTALL_QWEN}
   Skills: /root/.qwen/skills/wireguard-vpn/
 
 Команды:
-  wg show
-  systemctl status wg-dashboard
+  docker compose ps
+  docker compose logs
+  docker compose restart
   qwen
 EOF
 
-log_success "Информация сохранена в /root/wgdashboard-info.txt"
+log_success "Информация сохранена в ${WGDIR}/info.txt"
 echo ""

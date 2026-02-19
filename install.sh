@@ -187,15 +187,34 @@ services:
 EOF
 
 # Запуск контейнера
-docker compose up -d
+# Проверка доступной версии docker compose
+if docker compose version &>/dev/null; then
+    docker compose up -d
+elif docker-compose version &>/dev/null; then
+    docker-compose up -d
+else
+    # Установка docker-compose-plugin если нет ни одного
+    apt install -y docker-compose-plugin
+    docker compose up -d
+fi
 
 # Проверка запуска
 sleep 5
-if docker compose ps | grep -q "Up"; then
+
+# Определение команды для проверки
+if docker compose version &>/dev/null; then
+    DOCKER_COMPOSE_CMD="docker compose"
+elif docker-compose version &>/dev/null; then
+    DOCKER_COMPOSE_CMD="docker-compose"
+else
+    DOCKER_COMPOSE_CMD="docker compose"
+fi
+
+if $DOCKER_COMPOSE_CMD ps | grep -q "Up"; then
     log_success "WGDashboard запущен"
 else
     log_error "Не удалось запустить WGDashboard"
-    docker compose logs
+    $DOCKER_COMPOSE_CMD logs
     exit 1
 fi
 

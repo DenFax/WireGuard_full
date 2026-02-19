@@ -294,7 +294,8 @@ if [ "$INSTALL_QWEN" = true ]; then
     fi
     
     # Установка Qwen Code через npm
-    npm install -g @anthropic/qwen-code
+    log_info "Установка Qwen Code..."
+    npm install -g @qwen-code/qwen-code@latest
     
     # Создание директории для skills
     mkdir -p /root/.qwen/skills
